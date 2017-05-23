@@ -53,6 +53,7 @@ def read_data(raw_text, feature_size):
         # label, fvのリストをappend
         labels.append(label)
         fvs.append(fv)
+
     data_lists = (labels, fvs)
     return (data_lists, max_idx + 1)
 
