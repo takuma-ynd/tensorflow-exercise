@@ -17,8 +17,7 @@ def read_instance(line):
         indices += [idx for i in range(freq)]
 
     label = int(str_label)
-    tuple_ = (label, indices)
-    return tuple_
+    return (label, indices)
 
 def read_data(raw_text, feature_size):
     """process instances
@@ -53,8 +52,8 @@ def read_data(raw_text, feature_size):
         # label, fvのリストをappend
         labels.append(label)
         fvs.append(fv)
-    tuples = (labels, fvs)
-    return (tuples, max_idx + 1)
+    data_lists = (labels, fvs)
+    return (data_lists, max_idx + 1)
 
 def shuffle(*args):
     """shuffle multiple lists keeping the correspondence of indices
