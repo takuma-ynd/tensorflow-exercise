@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 import sys
 import tensorflow as tf
 import random
@@ -95,7 +96,7 @@ if __name__ == "__main__":
         # 変数の定義
         weight = tf.Variable(tf.random_uniform([dim, 2])) # 2値分類ゆえ,[dim x 2]
         bias = tf.Variable(tf.random_uniform([1, 2])) # 2値分類ゆえ,[1 x 2]
-        embedding = tf.Variable(tf.random_uniform([vocab_size, dim]), name="embedding")
+        embeddings = tf.Variable(tf.random_uniform([vocab_size, dim]), name="embeddings")
 
         # placeholderの定義
         # この記述でindicesはリストになる, shape=Noneに注意。indicesの数はmax_indexに関係ない
@@ -104,7 +105,7 @@ if __name__ == "__main__":
         label = tf.div((signed_label + 1), 2)  # {-1,1} --> {0,1}
 
         # 必要な変数
-        vectors = tf.nn.embedding_lookup(embedding, indices) # indicesはリスト. tf.shape(vectors):[847, 50]
+        vectors = tf.nn.embedding_lookup(embeddings, indices) # indicesはリスト. tf.shape(vectors):[847, 50]
 
         # keep_dims=Trueを立てないと、rankが1になっちまう(「行列」ではなく、「ベクトル」になる感じ)
         ave_vector = tf.reduce_mean(vectors, axis=0, keep_dims=True) # tf.shape(ave_vector):[1, 50]
