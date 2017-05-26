@@ -94,14 +94,14 @@ if __name__ == "__main__":
     with mixed_graph.as_default():
 
         # 変数の定義
-        weight = tf.Variable(tf.random_uniform([dim, 2])) # 2値分類ゆえ,[dim x 2]
-        bias = tf.Variable(tf.random_uniform([1, 2])) # 2値分類ゆえ,[1 x 2]
+        weight = tf.Variable(tf.random_uniform([dim, 2]), name="weight") # 2値分類ゆえ,[dim x 2]
+        bias = tf.Variable(tf.random_uniform([1, 2]), name="bias") # 2値分類ゆえ,[1 x 2]
         embeddings = tf.Variable(tf.random_uniform([vocab_size, dim]), name="embeddings")
 
         # placeholderの定義
         # この記述でindicesはリストになる, shape=Noneに注意。indicesの数はmax_indexに関係ない
-        indices = tf.placeholder(tf.int32, shape=None) # tf.shape(indices): [847]
-        signed_label = tf.placeholder(tf.int32, shape=None) # tf.shape(signed_label): [] (Scalar)
+        indices = tf.placeholder(tf.int32, shape=None, name="indices") # tf.shape(indices): [847]
+        signed_label = tf.placeholder(tf.int32, shape=None, name="signed_label") # tf.shape(signed_label): [] (Scalar)
         label = tf.div((signed_label + 1), 2)  # {-1,1} --> {0,1}
 
         # 必要な変数
