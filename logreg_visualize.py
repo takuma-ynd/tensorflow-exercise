@@ -98,10 +98,12 @@ if __name__ == "__main__":
             for i, (label_, fv_) in enumerate(zip(labels_, fvs_)):
                 feed = {signed_label:label_, indices:fv_}
                 _, cur_entropy, summary = sess.run([train_op, cross_entropy, merged], feed_dict=feed)
+
                 if epoch == 0 and i % 10 == 0:
                     train_writer.add_summary(summary, global_step=i)
 
                 print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, cur_entropy))
+
         print("--- training finished ---")
 
         ### Evaluation ###
