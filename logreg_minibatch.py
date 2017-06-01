@@ -43,6 +43,7 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     batch_generation_graph = tf.Graph()
     with batch_generation_graph.as_default():
         input_labels, input_fvs = tf.constant(labels), tf.constant(fvs)
+
         # Queueを作り、batch_size回enqueueしてbatchを作る
         input_label, input_fv = tf.train.slice_input_producer([input_labels, input_fvs], num_epochs=1)
 
@@ -84,26 +85,8 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
         coord.join(threads)
     return
 
-if __name__ == "__main__":
-    dim = 50
-    batch_size = 10 # バッチ処理
-    NUM_EPOCS = 30
-    SHUFFLE = True
 
-    assert len(sys.argv) > 2, "arg1: train_file, arg2: test_file"
-    train_path = sys.argv[1]
-    test_path = sys.argv[2]
-
-    # ファイルをオープン
-    with open(train_path) as f:
-        train_text = f.read().strip()
-
-    with open(test_path) as f:
-        test_text = f.read().strip()
-
-    train_data, vocab_size = util.read_data(train_text,-1)
-    test_data, _ = util.read_data(test_text, vocab_size)
-
+def build_graph():
     # グラフ作成
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
@@ -111,6 +94,8 @@ if __name__ == "__main__":
         # バッチ生成とグラフ構築
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
         input_labels = tf.placeholder(tf.int32, shape=None, name="input_labels") # [batch_size]
+        keep_prob = tf.placeholder(tf.float32) # scalar
+
         fvs = input_fvs
         signed_labels = input_labels
         labels = tf.div((signed_labels + 1), 2)  # {-1,1} --> {0,1}
@@ -125,6 +110,8 @@ if __name__ == "__main__":
         ave_vectors = tf.reduce_mean(vectors, axis=1)
 
         # logistic regression の計算
+        # NOT GOOD: このままだとevaluation時にもdropoutが適用されちまう!!!!
+        ave_vectors = tf.nn.dropout(ave_vectors, keep_prob)
         logits = tf.add(tf.matmul(ave_vectors, weight), bias)
         y = tf.nn.softmax(logits)
 
@@ -142,7 +129,67 @@ if __name__ == "__main__":
         precision, precision_update_op = tf.metrics.precision(labels, predicted_labels)
         recall, recall_update_op = tf.metrics.recall(labels, predicted_labels)
 
-    with tf.Session(graph=mixed_graph) as sess:
+        # tensorboard用のsummary
+        loss_summary = tf.summary.scalar("cross_entropy",cross_entropy)
+        merged = tf.summary.merge_all()
+
+    class TrainGraph(object):
+        def __init__(self):
+            # place_holders
+            self.input_fvs = input_fvs
+            self.input_labels = input_labels
+            self.keep_prob = keep_prob
+
+            # operations
+            self.train_op = train_op
+            self.accuracy = accuracy_update_op
+            self.precision = precision_update_op
+            self.recall = recall_update_op
+
+            # additional variable
+            self.cross_entropy = cross_entropy
+
+            # output in need
+            self.graph = mixed_graph
+            self.predicted_labels = predicted_labels
+            self.merged = merged
+
+    return TrainGraph()
+
+
+if __name__ == "__main__":
+    assert len(sys.argv) > 2, "arg1: train_file, arg2: test_file"
+    train_path = sys.argv[1]
+    test_path = sys.argv[2]
+
+    tf.flags.DEFINE_integer("dim", 50, "dimension of embeddings. (default: 50)")
+    tf.flags.DEFINE_integer("batch-size", 10, "batch size. (default: 10)")
+    tf.flags.DEFINE_float("train-dropout", 0.5, "keep probability of dropout for a training. (default: 0.5)")
+    tf.flags.DEFINE_integer("num-epochs", 10, "number of epochs to train. (default: 10)")
+    tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
+    FLAGS = tf.flags.FLAGS
+    dim = FLAGS.dim
+    batch_size = FLAGS.batch_size
+    num_epochs = FLAGS.num_epochs
+    shuffle = True
+    train_dropout = FLAGS.train_dropout
+    eval_dropout = 1.0
+
+    # ファイルをオープン
+    with open(train_path) as f:
+        train_text = f.read().strip()
+
+    with open(test_path) as f:
+        test_text = f.read().strip()
+
+    train_data, vocab_size = util.read_data(train_text,-1)
+    test_data, _ = util.read_data(test_text, vocab_size)
+
+    graph = build_graph()
+
+    with tf.Session(graph=graph.graph) as sess:
+        # for tensorboard
+        train_writer = tf.summary.FileWriter("/tmp/minibatch_train", graph=sess.graph)
 
         ### Training ###
 
@@ -151,7 +198,7 @@ if __name__ == "__main__":
         fvs = pad(fvs) # zero-padding.
 
         # batchの作成
-        train_batches = list(generate_batches(labels, fvs, batch_size=10, shuffle=SHUFFLE))
+        train_batches = list(generate_batches(labels, fvs, batch_size=10, shuffle=shuffle))
 
         # 初期化
         init_op = tf.group(tf.global_variables_initializer(),
@@ -159,10 +206,19 @@ if __name__ == "__main__":
         sess.run(init_op)
 
         # 各バッチ毎にトレーニング
-        for epoch in range(NUM_EPOCS):
+        for epoch in range(num_epochs):
             for i, (batch_labels, batch_fvs) in enumerate(train_batches):
-                feed = {input_labels:batch_labels, input_fvs:batch_fvs}
-                _, loss = sess.run([train_op, cross_entropy], feed_dict=feed)
+                feed = {graph.input_labels:batch_labels,
+                        graph.input_fvs:batch_fvs,
+                        graph.keep_prob:train_dropout}
+                _, loss, summary = sess.run([
+                    graph.train_op,
+                    graph.cross_entropy,
+                    graph.merged], feed_dict=feed)
+
+                if epoch == 0:
+                    train_writer.add_summary(summary, global_step=i)
+
                 print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
         print("--- training finished ---")
 
@@ -181,11 +237,13 @@ if __name__ == "__main__":
 
         # 各バッチ毎に評価
         for i, (batch_labels, batch_fvs) in enumerate(test_batches):
-            feed = {input_labels:batch_labels, input_fvs:batch_fvs}
+            feed = {graph.input_labels:batch_labels,
+                    graph.input_fvs:batch_fvs,
+                    graph.keep_prob:eval_dropout}
             acc, pre, rec = sess.run([
-                accuracy_update_op,
-                precision_update_op,
-                recall_update_op],feed_dict=feed)
+                graph.accuracy,
+                graph.precision,
+                graph.recall],feed_dict=feed)
             print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
         print("accuracy:", acc)
         print("f-measure:", 2*(pre*rec)/(pre+rec))
