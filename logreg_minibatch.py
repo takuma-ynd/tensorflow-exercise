@@ -4,12 +4,17 @@
 import sys
 import tensorflow as tf
 import logreg_online as util
-import ipdb
+# import ipdb
 
 # mini-batchを使った学習
-# feed_dictする代わりに、全データをTensorFlowに渡しておいて、
-# 実行時にbatchを作ってもらうのがポイント
+# tf.train.batchを用いて、事前にmini-batchを作成するグラフを作るようにしている
+# mini-batch生成のためだけにグラフを作ってsess.runするという、
+# かなり変な形になっているので普通にpythonでmini-batch作成したほうが速いと思う。
 
+# memo:
+# これこそがwith tf.Graph().as_default(): でグラフを分けることが必要な良い例?
+# trainingのセッション中に、現在のグラフに対して初期化等行わずに
+# generate_batches(内部で別グラフ作成、別Sessionをsess.run)などを実行可能。
 def pad(bumpy_lists):
     """Add zero-padding to bumpy lists
     Arg:
@@ -17,32 +22,35 @@ def pad(bumpy_lists):
     - rank2, bumpy list
 
     Return:
-    - rank2, lists of same length with zero-padding
+    - lists of same length with zero-padding
     
     Ex:
     input: [[1,2,3,4,5], [1,2], [1,2,3]]
     output: [[1,2,3,4,5], [1,2,0,0,0], [1,2,3,0,0]]
     """
-    def pad_list(rank1_list):
+    def pad_rank1_list(rank1_list):
+        """Add zero-padding to a single (rank1) list
+        """
         return rank1_list + [0 for _ in range(maxlen - len(rank1_list))]
 
     maxlen = max(len(list_) for list_ in bumpy_lists)
-    return [pad_list(list_) for list_ in bumpy_lists]
+    return [pad_rank1_list(list_) for list_ in bumpy_lists]
 
     
 def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     """generate batches from fvs and labels
     Args:
-    input_fvs: Tensor
-    input_labels: Tensor
+    labels: list of labels
+    fvs: list of list(fvs)
 
     Returns:
-    tuple of Tensors (labels and fvs)
+    generator: generate mini-batch of (labels, fvs) each time.
     """
     print("building batch generation graph...")
     batch_generation_graph = tf.Graph()
     with batch_generation_graph.as_default():
         input_labels, input_fvs = tf.constant(labels), tf.constant(fvs)
+
         # Queueを作り、batch_size回enqueueしてbatchを作る
         input_label, input_fv = tf.train.slice_input_producer([input_labels, input_fvs], num_epochs=1)
 
@@ -59,8 +67,9 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     with tf.Session(graph=batch_generation_graph) as sess:
 
         # 初期化
-        init_op = tf.group(tf.global_variables_initializer(),
-                           tf.local_variables_initializer())
+        # init_op = tf.group(tf.global_variables_initializer(),
+        #                    tf.local_variables_initializer())
+        init_op = tf.local_variables_initializer()
         sess.run(init_op)
 
         # train.batchに必要
@@ -75,8 +84,8 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
                 yield sess.run([batch_labels, batch_fvs])
 
         except tf.errors.OutOfRangeError:
-            # batch_sizeを10にしてもこの例外送出されるのはマジで謎
-            print("OutOfRangeError but no problem !!")
+            # batch_sizeを10(割り切れる数)にしてもこの例外送出されるのは謎
+            pass
 
         finally:
             coord.request_stop()
@@ -84,33 +93,21 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
         coord.join(threads)
     return
 
-if __name__ == "__main__":
-    dim = 50
-    batch_size = 10 # バッチ処理
-    NUM_EPOCS = 30
-    SHUFFLE = True
 
-    assert len(sys.argv) > 2, "arg1: train_file, arg2: test_file"
-    train_path = sys.argv[1]
-    test_path = sys.argv[2]
+def build_graph():
+    """build forward + evaluation graph
+    builds graph and return the object which contains tensors to be used.
+    """
 
-    # ファイルをオープン
-    with open(train_path) as f:
-        train_text = f.read().strip()
-
-    with open(test_path) as f:
-        test_text = f.read().strip()
-
-    train_data, vocab_size = util.read_data(train_text,-1)
-    test_data, _ = util.read_data(test_text, vocab_size)
-
-    # グラフ作成
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
+        dim = FLAGS.dim
 
         # バッチ生成とグラフ構築
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
         input_labels = tf.placeholder(tf.int32, shape=None, name="input_labels") # [batch_size]
+        keep_prob = tf.placeholder(tf.float32) # scalar
+
         fvs = input_fvs
         signed_labels = input_labels
         labels = tf.div((signed_labels + 1), 2)  # {-1,1} --> {0,1}
@@ -125,6 +122,8 @@ if __name__ == "__main__":
         ave_vectors = tf.reduce_mean(vectors, axis=1)
 
         # logistic regression の計算
+        # evaluation時にはkeep_probを1に戻してあげる
+        ave_vectors = tf.nn.dropout(ave_vectors, keep_prob)
         logits = tf.add(tf.matmul(ave_vectors, weight), bias)
         y = tf.nn.softmax(logits)
 
@@ -142,7 +141,63 @@ if __name__ == "__main__":
         precision, precision_update_op = tf.metrics.precision(labels, predicted_labels)
         recall, recall_update_op = tf.metrics.recall(labels, predicted_labels)
 
-    with tf.Session(graph=mixed_graph) as sess:
+        # tensorboard用のsummary
+        loss_summary = tf.summary.scalar("cross_entropy",cross_entropy)
+        merged = tf.summary.merge_all()
+
+    class TrainGraph(object):
+        def __init__(self):
+            # place_holders
+            self.input_fvs = input_fvs
+            self.input_labels = input_labels
+            self.keep_prob = keep_prob
+
+            # operations
+            self.train_op = train_op
+            self.accuracy = accuracy_update_op
+            self.precision = precision_update_op
+            self.recall = recall_update_op
+
+            # additional variable
+            self.cross_entropy = cross_entropy
+
+            # output in need
+            self.graph = mixed_graph
+            self.predicted_labels = predicted_labels
+            self.merged = merged
+
+    return TrainGraph()
+
+
+if __name__ == "__main__":
+    assert len(sys.argv) > 2, "arg1: train_file, arg2: test_file"
+    train_path = sys.argv[1]
+    test_path = sys.argv[2]
+
+    # tf.flagsの設定。実行時に引数渡すだけで変数の値を買えられるようになる.
+    tf.flags.DEFINE_integer("dim", 50, "dimension of embeddings. (default: 50)")
+    tf.flags.DEFINE_integer("batch-size", 16, "batch size. (default: 16)")
+    tf.flags.DEFINE_float("train-dropout", 0.3, "keep probability of dropout for a training. (default: 0.5)")
+    tf.flags.DEFINE_integer("num-epochs", 50, "number of epochs to train. (default: 50)")
+    tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
+    tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
+    FLAGS = tf.flags.FLAGS
+
+    # ファイルをオープン
+    with open(train_path) as f:
+        train_text = f.read().strip()
+
+    with open(test_path) as f:
+        test_text = f.read().strip()
+
+    train_data, vocab_size = util.read_data(train_text,-1)
+    test_data, _ = util.read_data(test_text, vocab_size)
+
+    graph = build_graph()
+
+    with tf.Session(graph=graph.graph) as sess:
+        # for tensorboard
+        train_writer = tf.summary.FileWriter(FLAGS.logdir, graph=sess.graph)
 
         ### Training ###
 
@@ -151,7 +206,7 @@ if __name__ == "__main__":
         fvs = pad(fvs) # zero-padding.
 
         # batchの作成
-        train_batches = list(generate_batches(labels, fvs, batch_size=10, shuffle=SHUFFLE))
+        train_batches = list(generate_batches(labels, fvs, batch_size=FLAGS.batch_size, shuffle=FLAGS.shuffle))
 
         # 初期化
         init_op = tf.group(tf.global_variables_initializer(),
@@ -159,10 +214,19 @@ if __name__ == "__main__":
         sess.run(init_op)
 
         # 各バッチ毎にトレーニング
-        for epoch in range(NUM_EPOCS):
+        for epoch in range(FLAGS.num_epochs):
             for i, (batch_labels, batch_fvs) in enumerate(train_batches):
-                feed = {input_labels:batch_labels, input_fvs:batch_fvs}
-                _, loss = sess.run([train_op, cross_entropy], feed_dict=feed)
+                feed = {graph.input_labels:batch_labels,
+                        graph.input_fvs:batch_fvs,
+                        graph.keep_prob:FLAGS.train_dropout}
+                _, loss, summary = sess.run([
+                    graph.train_op,
+                    graph.cross_entropy,
+                    graph.merged], feed_dict=feed)
+
+                if epoch == 0:
+                    train_writer.add_summary(summary, global_step=i)
+
                 print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
         print("--- training finished ---")
 
@@ -178,14 +242,17 @@ if __name__ == "__main__":
         # 初期化
         eval_init_op = tf.local_variables_initializer()
         sess.run(eval_init_op)
+        eval_dropout = 1.0
 
         # 各バッチ毎に評価
         for i, (batch_labels, batch_fvs) in enumerate(test_batches):
-            feed = {input_labels:batch_labels, input_fvs:batch_fvs}
+            feed = {graph.input_labels:batch_labels,
+                    graph.input_fvs:batch_fvs,
+                    graph.keep_prob:eval_dropout}
             acc, pre, rec = sess.run([
-                accuracy_update_op,
-                precision_update_op,
-                recall_update_op],feed_dict=feed)
+                graph.accuracy,
+                graph.precision,
+                graph.recall],feed_dict=feed)
             print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
         print("accuracy:", acc)
         print("f-measure:", 2*(pre*rec)/(pre+rec))
