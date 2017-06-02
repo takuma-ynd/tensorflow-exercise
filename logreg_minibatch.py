@@ -102,6 +102,7 @@ def build_graph():
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
         dim = FLAGS.dim
+        l2_coef = FLAGS.l2_coef
 
         # バッチ生成とグラフ構築
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
@@ -129,7 +130,7 @@ def build_graph():
 
         # tf.one_hot(indices, depth, on_value=None, off_value=None, axis=None, dtype=None, name=None)
         one_hot = tf.one_hot(labels, 2)
-        cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y)))
+        cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y))) + l2_coef * tf.nn.l2_loss(weight)
 
         # トレーニングの設定
         optimizer = tf.train.AdamOptimizer() # AdamOptimizerをoptimizerとして設定
@@ -177,10 +178,12 @@ if __name__ == "__main__":
     # tf.flagsの設定。実行時に引数渡すだけで変数の値を買えられるようになる.
     tf.flags.DEFINE_integer("dim", 50, "dimension of embeddings. (default: 50)")
     tf.flags.DEFINE_integer("batch-size", 16, "batch size. (default: 16)")
-    tf.flags.DEFINE_float("train-dropout", 0.3, "keep probability of dropout for a training. (default: 0.5)")
+    tf.flags.DEFINE_float("train-dropout", 0.5, "keep probability of dropout for a training. (default: 0.5)")
     tf.flags.DEFINE_integer("num-epochs", 50, "number of epochs to train. (default: 50)")
     tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
+    tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.")
     tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
+
     FLAGS = tf.flags.FLAGS
 
     # ファイルをオープン

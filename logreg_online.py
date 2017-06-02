@@ -72,7 +72,7 @@ def shuffle(*args):
 if __name__ == "__main__":
     assert len(sys.argv) > 2
     SHUFFLE = True
-    NUM_EPOCS = 10
+    NUM_EPOCHS = 10
 
     train_file_path = sys.argv[1]
     eval_file_path = sys.argv[2]
@@ -148,11 +148,12 @@ if __name__ == "__main__":
         else:
             labels_, fvs_ = train_data
         
-        for epoch in range(NUM_EPOCS):
+        for epoch in range(NUM_EPOCHS):
             for i, (label_, fv_) in enumerate(zip(labels_, fvs_)):
                 feed = {signed_label:label_, indices:fv_}
                 _, cur_entropy = sess.run([train_op, cross_entropy], feed_dict=feed)
-                print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, cur_entropy))
+                if i % 200 == 0:
+                    print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, cur_entropy))
         print("--- training finished ---")
         
         ### Evaluation ###
@@ -161,7 +162,7 @@ if __name__ == "__main__":
         eval_init_op = tf.local_variables_initializer()
         sess.run(eval_init_op)
 
-        print("--- evaluation ---")        
+        print("--- evaluation ---")
         labels_, fvs_ = test_data
         for i, (label_, fv_) in enumerate(zip(labels_, fvs_)):
             feed = {signed_label:label_, indices:fv_}
@@ -170,6 +171,5 @@ if __name__ == "__main__":
                 precision_update_op,
                 recall_update_op
             ], feed_dict=feed)
-            print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
-        print("accuracy:", acc)
+        print("acc:{}\tpre:{}\trec:{}".format(acc, pre, rec))
         print("f-measure:", 2*(pre*rec)/(pre+rec))
