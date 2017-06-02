@@ -4,12 +4,18 @@
 import sys
 import tensorflow as tf
 import logreg_online as util
-import ipdb
+import time
+# import ipdb
 
 # mini-batchを使った学習
-# feed_dictする代わりに、全データをTensorFlowに渡しておいて、
-# 実行時にbatchを作ってもらうのがポイント
+# tf.train.batchを用いて、事前にmini-batchを作成するグラフを作るようにしている
+# mini-batch生成のためだけにグラフを作ってsess.runするという、
+# かなり変な形になっているので普通にpythonでmini-batch作成したほうが速いと思う。
 
+# memo:
+# これこそがwith tf.Graph().as_default(): でグラフを分けることが必要な良い例?
+# trainingのセッション中に、現在のグラフに対して初期化等行わずに
+# generate_batches(内部で別グラフ作成、別Sessionをsess.run)などを実行可能。
 def pad(bumpy_lists):
     """Add zero-padding to bumpy lists
     Arg:
@@ -17,27 +23,29 @@ def pad(bumpy_lists):
     - rank2, bumpy list
 
     Return:
-    - rank2, lists of same length with zero-padding
+    - lists of same length with zero-padding
     
     Ex:
     input: [[1,2,3,4,5], [1,2], [1,2,3]]
     output: [[1,2,3,4,5], [1,2,0,0,0], [1,2,3,0,0]]
     """
-    def pad_list(rank1_list):
+    def pad_rank1_list(rank1_list):
+        """Add zero-padding to a single (rank1) list
+        """
         return rank1_list + [0 for _ in range(maxlen - len(rank1_list))]
 
     maxlen = max(len(list_) for list_ in bumpy_lists)
-    return [pad_list(list_) for list_ in bumpy_lists]
+    return [pad_rank1_list(list_) for list_ in bumpy_lists]
 
     
 def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     """generate batches from fvs and labels
     Args:
-    input_fvs: Tensor
-    input_labels: Tensor
+    labels: list of labels
+    fvs: list of list(fvs)
 
     Returns:
-    tuple of Tensors (labels and fvs)
+    generator: generate mini-batch of (labels, fvs) each time.
     """
     print("building batch generation graph...")
     batch_generation_graph = tf.Graph()
@@ -60,8 +68,9 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     with tf.Session(graph=batch_generation_graph) as sess:
 
         # 初期化
-        init_op = tf.group(tf.global_variables_initializer(),
-                           tf.local_variables_initializer())
+        # init_op = tf.group(tf.global_variables_initializer(),
+        #                    tf.local_variables_initializer())
+        init_op = tf.local_variables_initializer()
         sess.run(init_op)
 
         # train.batchに必要
@@ -76,8 +85,8 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
                 yield sess.run([batch_labels, batch_fvs])
 
         except tf.errors.OutOfRangeError:
-            # batch_sizeを10にしてもこの例外送出されるのはマジで謎
-            print("OutOfRangeError but no problem !!")
+            # batch_sizeを10(割り切れる数)にしてもこの例外送出されるのは謎
+            pass
 
         finally:
             coord.request_stop()
@@ -87,9 +96,14 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
 
 
 def build_graph():
-    # グラフ作成
+    """build forward + evaluation graph
+    builds graph and return the object which contains tensors to be used.
+    """
+
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
+        dim = FLAGS.dim
+        l2_coef = FLAGS.l2_coef
 
         # バッチ生成とグラフ構築
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
@@ -110,14 +124,14 @@ def build_graph():
         ave_vectors = tf.reduce_mean(vectors, axis=1)
 
         # logistic regression の計算
-        # NOT GOOD: このままだとevaluation時にもdropoutが適用されちまう!!!!
+        # evaluation時にはkeep_probを1に戻してあげる
         ave_vectors = tf.nn.dropout(ave_vectors, keep_prob)
         logits = tf.add(tf.matmul(ave_vectors, weight), bias)
         y = tf.nn.softmax(logits)
 
         # tf.one_hot(indices, depth, on_value=None, off_value=None, axis=None, dtype=None, name=None)
         one_hot = tf.one_hot(labels, 2)
-        cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y)))
+        cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y))) + l2_coef * tf.nn.l2_loss(weight)
 
         # トレーニングの設定
         optimizer = tf.train.AdamOptimizer() # AdamOptimizerをoptimizerとして設定
@@ -162,18 +176,17 @@ if __name__ == "__main__":
     train_path = sys.argv[1]
     test_path = sys.argv[2]
 
+    # tf.flagsの設定。実行時に引数渡すだけで変数の値を買えられるようになる.
     tf.flags.DEFINE_integer("dim", 50, "dimension of embeddings. (default: 50)")
-    tf.flags.DEFINE_integer("batch-size", 10, "batch size. (default: 10)")
+    tf.flags.DEFINE_integer("batch-size", 16, "batch size. (default: 16)")
     tf.flags.DEFINE_float("train-dropout", 0.5, "keep probability of dropout for a training. (default: 0.5)")
-    tf.flags.DEFINE_integer("num-epochs", 10, "number of epochs to train. (default: 10)")
+    tf.flags.DEFINE_integer("num-epochs", 50, "number of epochs to train. (default: 50)")
     tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
+    tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.")
+    tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
+    tf.flags.DEFINE_boolean("eval-log", False, "whether or not to save evaluation data to eval-log-file.")
+    tf.flags.DEFINE_string("eval-log-file", "evaluation-result.log", "path of evaluation log file")
     FLAGS = tf.flags.FLAGS
-    dim = FLAGS.dim
-    batch_size = FLAGS.batch_size
-    num_epochs = FLAGS.num_epochs
-    shuffle = True
-    train_dropout = FLAGS.train_dropout
-    eval_dropout = 1.0
 
     # ファイルをオープン
     with open(train_path) as f:
@@ -188,8 +201,12 @@ if __name__ == "__main__":
     graph = build_graph()
 
     with tf.Session(graph=graph.graph) as sess:
+        #example: Fri_Jun__2_16:07:20_2017
+        board_name = time.ctime(time.time()).replace(" ", "_")
+        tb_logdir = FLAGS.logdir + "/"  + board_name
+
         # for tensorboard
-        train_writer = tf.summary.FileWriter("/tmp/minibatch_train", graph=sess.graph)
+        train_writer = tf.summary.FileWriter(tb_logdir, graph=sess.graph)
 
         ### Training ###
 
@@ -198,7 +215,8 @@ if __name__ == "__main__":
         fvs = pad(fvs) # zero-padding.
 
         # batchの作成
-        train_batches = list(generate_batches(labels, fvs, batch_size=10, shuffle=shuffle))
+        train_batches = list(generate_batches(labels, fvs, batch_size=FLAGS.batch_size, shuffle=FLAGS.shuffle))
+        num_batches = len(train_batches)
 
         # 初期化
         init_op = tf.group(tf.global_variables_initializer(),
@@ -206,18 +224,18 @@ if __name__ == "__main__":
         sess.run(init_op)
 
         # 各バッチ毎にトレーニング
-        for epoch in range(num_epochs):
+        for epoch in range(FLAGS.num_epochs):
             for i, (batch_labels, batch_fvs) in enumerate(train_batches):
                 feed = {graph.input_labels:batch_labels,
                         graph.input_fvs:batch_fvs,
-                        graph.keep_prob:train_dropout}
+                        graph.keep_prob:FLAGS.train_dropout}
                 _, loss, summary = sess.run([
                     graph.train_op,
                     graph.cross_entropy,
                     graph.merged], feed_dict=feed)
 
-                if epoch == 0:
-                    train_writer.add_summary(summary, global_step=i)
+                if i % 200 == 0:
+                    train_writer.add_summary(summary, global_step=(epoch*num_batches + i))
 
                 print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
         print("--- training finished ---")
@@ -234,6 +252,7 @@ if __name__ == "__main__":
         # 初期化
         eval_init_op = tf.local_variables_initializer()
         sess.run(eval_init_op)
+        eval_dropout = 1.0
 
         # 各バッチ毎に評価
         for i, (batch_labels, batch_fvs) in enumerate(test_batches):
@@ -244,7 +263,10 @@ if __name__ == "__main__":
                 graph.accuracy,
                 graph.precision,
                 graph.recall],feed_dict=feed)
-            print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
-        print("accuracy:", acc)
-        print("f-measure:", 2*(pre*rec)/(pre+rec))
+        print("acc:{}\tpre:{}\trec:{}".format(acc, pre, rec))
+        f_measure = 2*(pre*rec)/(pre+rec)
+        print("f-measure:", f_measure)
 
+        if FLAGS.eval_log:
+            with open(FLAGS.eval_logfile, "a") as f:
+                f.write("num-epochs:{}\tl2_coef:{}\ttrain_dropout:{}\tbatch-size:{}\tdim:{}\tacc:{:.4}\tf:{:.4}\n".format(FLAGS.dim, FLAGS.l2_coef, FLAGS.train_dropout, FLAGS.batch_size, FLAGS.dim, acc, f_measure))

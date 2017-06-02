@@ -1,14 +1,21 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
+"""Play with TensorBoard
+usage:
+$ tensorboard --logdir=path/to/log-directory
+"""
 import sys
 import tensorflow as tf
 import ipdb
 import random
+import time
 import logreg_online as util
 
 if __name__ == "__main__":
     assert len(sys.argv) > 2
     SHUFFLE = True
-    NUM_EPOCS = 5
+    NUM_EPOCHS = 5
 
     train_file_path = sys.argv[1]
     eval_file_path = sys.argv[2]
@@ -73,8 +80,12 @@ if __name__ == "__main__":
 
     with tf.Session(graph=mixed_graph) as sess:
 
+        #example: Fri_Jun__2_16:07:20_2017
+        board_name = time.ctime(time.time()).replace(" ", "_")
+        tb_logdir = "/tmp/tensorflow_train/" + board_name
+
         # for tensorboard
-        train_writer = tf.summary.FileWriter("/tmp/tensorflow_train", graph=sess.graph)
+        train_writer = tf.summary.FileWriter(tb_logdir, graph=sess.graph)
 
         ### Training ###
 
@@ -93,16 +104,16 @@ if __name__ == "__main__":
             labels_, fvs_ = util.shuffle(*train_data)
         else:
             labels_, fvs_ = train_data
-        
-        for epoch in range(NUM_EPOCS):
+
+        num_labels = len(labels_)
+        for epoch in range(NUM_EPOCHS):
             for i, (label_, fv_) in enumerate(zip(labels_, fvs_)):
                 feed = {signed_label:label_, indices:fv_}
                 _, cur_entropy, summary = sess.run([train_op, cross_entropy, merged], feed_dict=feed)
 
-                if epoch == 0 and i % 10 == 0:
-                    train_writer.add_summary(summary, global_step=i)
-
-                print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, cur_entropy))
+                if i % 200 == 0:
+                    train_writer.add_summary(summary, global_step=(epoch*num_labels + i))
+                    print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, cur_entropy))
 
         print("--- training finished ---")
 
@@ -121,6 +132,5 @@ if __name__ == "__main__":
                 precision_update_op,
                 recall_update_op
             ], feed_dict=feed)
-            print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
-        print("accuracy:", acc)
+        print("acc:{}\tpre:{}\trec:{}".format(acc, pre, rec))
         print("f-measure:", 2*(pre*rec)/(pre+rec))
