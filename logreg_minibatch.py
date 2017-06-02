@@ -4,6 +4,7 @@
 import sys
 import tensorflow as tf
 import logreg_online as util
+import time
 # import ipdb
 
 # mini-batchを使った学習
@@ -183,7 +184,8 @@ if __name__ == "__main__":
     tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
     tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.")
     tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
-
+    tf.flags.DEFINE_boolean("eval-log", False, "whether or not to save evaluation data to eval-log-file.")
+    tf.flags.DEFINE_string("eval-log-file", "evaluation-result.log", "path of evaluation log file")
     FLAGS = tf.flags.FLAGS
 
     # ファイルをオープン
@@ -199,8 +201,12 @@ if __name__ == "__main__":
     graph = build_graph()
 
     with tf.Session(graph=graph.graph) as sess:
+        #example: Fri_Jun__2_16:07:20_2017
+        board_name = time.ctime(time.time()).replace(" ", "_")
+        tb_logdir = FLAGS.logdir + "/"  + board_name
+
         # for tensorboard
-        train_writer = tf.summary.FileWriter(FLAGS.logdir, graph=sess.graph)
+        train_writer = tf.summary.FileWriter(tb_logdir, graph=sess.graph)
 
         ### Training ###
 
@@ -210,6 +216,7 @@ if __name__ == "__main__":
 
         # batchの作成
         train_batches = list(generate_batches(labels, fvs, batch_size=FLAGS.batch_size, shuffle=FLAGS.shuffle))
+        num_batches = len(train_batches)
 
         # 初期化
         init_op = tf.group(tf.global_variables_initializer(),
@@ -227,8 +234,8 @@ if __name__ == "__main__":
                     graph.cross_entropy,
                     graph.merged], feed_dict=feed)
 
-                if epoch == 0:
-                    train_writer.add_summary(summary, global_step=i)
+                if i % 200 == 0:
+                    train_writer.add_summary(summary, global_step=(epoch*num_batches + i))
 
                 print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
         print("--- training finished ---")
@@ -256,7 +263,10 @@ if __name__ == "__main__":
                 graph.accuracy,
                 graph.precision,
                 graph.recall],feed_dict=feed)
-            print("iter:{}\tacc:{}\tpre:{}\trec:{}".format(i, acc, pre, rec))
-        print("accuracy:", acc)
-        print("f-measure:", 2*(pre*rec)/(pre+rec))
+        print("acc:{}\tpre:{}\trec:{}".format(acc, pre, rec))
+        f_measure = 2*(pre*rec)/(pre+rec)
+        print("f-measure:", f_measure)
 
+        if FLAGS.eval_log:
+            with open(FLAGS.eval_logfile, "a") as f:
+                f.write("num-epochs:{}\tl2_coef:{}\ttrain_dropout:{}\tbatch-size:{}\tdim:{}\tacc:{:.4}\tf:{:.4}\n".format(FLAGS.dim, FLAGS.l2_coef, FLAGS.train_dropout, FLAGS.batch_size, FLAGS.dim, acc, f_measure))
