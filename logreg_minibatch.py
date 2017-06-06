@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import time
 import tensorflow as tf
 import logreg_online as util
-import time
-# import ipdb
+
+import ipdb
 
 # mini-batchを使った学習
 # tf.train.batchを用いて、事前にmini-batchを作成するグラフを作るようにしている
@@ -24,7 +25,7 @@ def pad(bumpy_lists):
 
     Return:
     - lists of same length with zero-padding
-    
+
     Ex:
     input: [[1,2,3,4,5], [1,2], [1,2,3]]
     output: [[1,2,3,4,5], [1,2,0,0,0], [1,2,3,0,0]]
@@ -37,7 +38,6 @@ def pad(bumpy_lists):
     maxlen = max(len(list_) for list_ in bumpy_lists)
     return [pad_rank1_list(list_) for list_ in bumpy_lists]
 
-    
 def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     """generate batches from fvs and labels
     Args:
@@ -95,15 +95,18 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     return
 
 
-def build_graph():
+def build_graph(dim, l2_coef):
     """build forward + evaluation graph
     builds graph and return the object which contains tensors to be used.
+    
+    Note:
+    input_fvs will be zero-padded tensor.
+    This graph computes actual sequence length(the number of non-zero values) on the fly. 
+    (http://danijar.com/variable-sequence-lengths-in-tensorflow/)
     """
 
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
-        dim = FLAGS.dim
-        l2_coef = FLAGS.l2_coef
 
         # バッチ生成とグラフ構築
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
@@ -115,13 +118,20 @@ def build_graph():
         labels = tf.div((signed_labels + 1), 2)  # {-1,1} --> {0,1}
 
         # 変数の定義
+        # tf.pad(tensor, [[1次元目のbefore, 1次元目のafter], [2次元目のbefore, 2次元目のafter]])
         weight = tf.Variable(tf.random_uniform([dim, 2]), name="weight")
         bias = tf.Variable(tf.random_uniform([1, 2]), name="bias") # valid size: [batch_size x 2]
-        embeddings = tf.Variable(tf.random_uniform([vocab_size, dim]), name="embeddings")
+        core_embeddings = tf.Variable(tf.random_uniform([vocab_size, dim]), name="core-embeddings")
+        embeddings = tf.pad(core_embeddings, [[1, 0], [0, 0]]) # for zero-padding
 
         # 必要な変数
         vectors = tf.nn.embedding_lookup(embeddings, fvs)
-        ave_vectors = tf.reduce_mean(vectors, axis=1)
+
+        # zero-paddingによって単純にreduce_meanできない問題を解決するtrick(http://danijar.com/variable-sequence-lengths-in-tensorflow/)
+        used = tf.sign(tf.reduce_max(tf.abs(vectors), axis=2)) # zero_paddingには0, その他には1が載るmaskを作成
+        length = tf.reduce_sum(used, axis=1, keep_dims=True) # keep_dimsをつけないとshape:(batch_size,)となり、割り算が不可能に.
+        sum_vectors = tf.reduce_sum(vectors, axis=1)
+        ave_vectors = sum_vectors / length 
 
         # logistic regression の計算
         # evaluation時にはkeep_probを1に戻してあげる
@@ -139,9 +149,9 @@ def build_graph():
 
         # 評価グラフ
         predicted_labels = tf.argmax(y, axis=1)
-        accuracy, accuracy_update_op = tf.metrics.accuracy(labels, predicted_labels)
-        precision, precision_update_op = tf.metrics.precision(labels, predicted_labels)
-        recall, recall_update_op = tf.metrics.recall(labels, predicted_labels)
+        _, accuracy_update_op = tf.metrics.accuracy(labels, predicted_labels)
+        _, precision_update_op = tf.metrics.precision(labels, predicted_labels)
+        _, recall_update_op = tf.metrics.recall(labels, predicted_labels)
 
         # tensorboard用のsummary
         loss_summary = tf.summary.scalar("cross_entropy",cross_entropy)
@@ -198,7 +208,7 @@ if __name__ == "__main__":
     train_data, vocab_size = util.read_data(train_text,-1)
     test_data, _ = util.read_data(test_text, vocab_size)
 
-    graph = build_graph()
+    graph = build_graph(FLAGS.dim, FLAGS.l2_coef)
 
     with tf.Session(graph=graph.graph) as sess:
         #example: Fri_Jun__2_16:07:20_2017
@@ -234,10 +244,10 @@ if __name__ == "__main__":
                     graph.cross_entropy,
                     graph.merged], feed_dict=feed)
 
-                if i % 200 == 0:
+                if i % (num_batches / 10) == 0:
+                    print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
                     train_writer.add_summary(summary, global_step=(epoch*num_batches + i))
 
-                print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
         print("--- training finished ---")
 
         ### Evaluation ###
