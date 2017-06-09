@@ -6,7 +6,7 @@ import time
 import tensorflow as tf
 import logreg_online as util
 
-import ipdb
+# import ipdb
 
 # mini-batchを使った学習
 # tf.train.batchを用いて、事前にmini-batchを作成するグラフを作るようにしている
@@ -46,6 +46,10 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
 
     Returns:
     generator: generate mini-batch of (labels, fvs) each time.
+
+    Note:
+    An example using tf.train.batches:
+    https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/how_tos/reading_data/fully_connected_preloaded.py
     """
     print("building batch generation graph...")
     batch_generation_graph = tf.Graph()
@@ -68,8 +72,6 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
     with tf.Session(graph=batch_generation_graph) as sess:
 
         # 初期化
-        # init_op = tf.group(tf.global_variables_initializer(),
-        #                    tf.local_variables_initializer())
         init_op = tf.local_variables_initializer()
         sess.run(init_op)
 
@@ -84,7 +86,7 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
                 counter += 1
                 yield sess.run([batch_labels, batch_fvs])
 
-        except tf.errors.OutOfRangeError:
+        except tf.errors.OutOfRangeError: # 全データ数がbatch_sizeで割り切れない時に起こるはず
             # batch_sizeを10(割り切れる数)にしてもこの例外送出されるのは謎
             pass
 
@@ -92,8 +94,6 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
             coord.request_stop()
 
         coord.join(threads)
-    return
-
 
 def build_graph(dim, l2_coef):
     """build forward + evaluation graph
@@ -102,17 +102,18 @@ def build_graph(dim, l2_coef):
     Note:
     input_fvs will be zero-padded tensor.
     This graph computes actual sequence length(the number of non-zero values) on the fly. 
-    (http://danijar.com/variable-sequence-lengths-in-tensorflow/)
+    http://danijar.com/variable-sequence-lengths-in-tensorflow/
     """
 
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
 
-        # バッチ生成とグラフ構築
+        # placeholders
         input_fvs = tf.placeholder(tf.int32, shape=[None, None], name="input_fvs") # [batch_size x dim]
         input_labels = tf.placeholder(tf.int32, shape=None, name="input_labels") # [batch_size]
         keep_prob = tf.placeholder(tf.float32) # scalar
 
+        # input_fvs, input_labels --> fvs, labels
         fvs = input_fvs
         signed_labels = input_labels
         labels = tf.div((signed_labels + 1), 2)  # {-1,1} --> {0,1}
@@ -122,11 +123,11 @@ def build_graph(dim, l2_coef):
         weight = tf.Variable(tf.random_uniform([dim, 2]), name="weight")
         bias = tf.Variable(tf.random_uniform([1, 2]), name="bias") # valid size: [batch_size x 2]
         core_embeddings = tf.Variable(tf.random_uniform([vocab_size, dim]), name="core-embeddings")
-        embeddings = tf.pad(core_embeddings, [[1, 0], [0, 0]]) # for zero-padding
+        embeddings = tf.pad(core_embeddings, [[1, 0], [0, 0]]) # add an additional row for zero-padding
 
-        # 必要な変数
         vectors = tf.nn.embedding_lookup(embeddings, fvs)
 
+        # vectors --> ave_vectors
         # zero-paddingによって単純にreduce_meanできない問題を解決するtrick(http://danijar.com/variable-sequence-lengths-in-tensorflow/)
         used = tf.sign(tf.reduce_max(tf.abs(vectors), axis=2)) # zero_paddingには0, その他には1が載るmaskを作成
         length = tf.reduce_sum(used, axis=1, keep_dims=True) # keep_dimsをつけないとshape:(batch_size,)となり、割り算が不可能に.
@@ -140,7 +141,7 @@ def build_graph(dim, l2_coef):
         y = tf.nn.softmax(logits)
 
         # tf.one_hot(indices, depth, on_value=None, off_value=None, axis=None, dtype=None, name=None)
-        one_hot = tf.one_hot(labels, 2)
+        one_hot = tf.one_hot(labels, depth=2)
         cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y))) + l2_coef * tf.nn.l2_loss(weight)
 
         # トレーニングの設定
@@ -173,7 +174,7 @@ def build_graph(dim, l2_coef):
             # additional variable
             self.cross_entropy = cross_entropy
 
-            # output in need
+            # output
             self.graph = mixed_graph
             self.predicted_labels = predicted_labels
             self.merged = merged
@@ -192,10 +193,10 @@ if __name__ == "__main__":
     tf.flags.DEFINE_float("train-dropout", 0.5, "keep probability of dropout for a training. (default: 0.5)")
     tf.flags.DEFINE_integer("num-epochs", 50, "number of epochs to train. (default: 50)")
     tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
-    tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.")
+    tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.(default: 1e-08)")
     tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
-    tf.flags.DEFINE_boolean("eval-log", False, "whether or not to save evaluation data to eval-log-file.")
-    tf.flags.DEFINE_string("eval-log-file", "evaluation-result.log", "path of evaluation log file")
+    tf.flags.DEFINE_boolean("eval-log", False, "whether or not to save evaluation data to eval-log-file. (default: Flase)")
+    tf.flags.DEFINE_string("eval-log-file", "evaluation-result.log", "path of evaluation log file (default: evaluation-result.log)")
     FLAGS = tf.flags.FLAGS
 
     # ファイルをオープン
@@ -214,6 +215,7 @@ if __name__ == "__main__":
         #example: Fri_Jun__2_16:07:20_2017
         board_name = time.ctime(time.time()).replace(" ", "_")
         tb_logdir = FLAGS.logdir + "/"  + board_name
+        print("training log will be summarized in:{}".format(tb_logdir))
 
         # for tensorboard
         train_writer = tf.summary.FileWriter(tb_logdir, graph=sess.graph)
@@ -244,7 +246,8 @@ if __name__ == "__main__":
                     graph.cross_entropy,
                     graph.merged], feed_dict=feed)
 
-                if i % (num_batches / 10) == 0:
+                # batchの1/10を学習する毎にログを取る
+                if i % (num_batches // 10)== 0:
                     print("epoch:{}\ttrain_data:{}\tcross_entropy:{}".format(epoch, i, loss))
                     train_writer.add_summary(summary, global_step=(epoch*num_batches + i))
 
@@ -257,7 +260,7 @@ if __name__ == "__main__":
         fvs = pad(fvs) # zero-padding.
 
         # batchの作成
-        test_batches = list(generate_batches(labels, fvs, batch_size=10))
+        test_batches = generate_batches(labels, fvs, batch_size=10)
 
         # 初期化
         eval_init_op = tf.local_variables_initializer()
