@@ -95,7 +95,7 @@ def generate_batches(labels, fvs, batch_size=10, shuffle=False):
 
         coord.join(threads)
 
-def build_graph(dim, l2_coef):
+def build_graph(dim, l2_coef, learning_rate):
     """build forward + evaluation graph
     builds graph and return the object which contains tensors to be used.
     
@@ -104,6 +104,9 @@ def build_graph(dim, l2_coef):
     This graph computes actual sequence length(the number of non-zero values) on the fly. 
     http://danijar.com/variable-sequence-lengths-in-tensorflow/
     """
+
+    # random seedを固定
+    tf.set_random_seed(1)
 
     mixed_graph = tf.Graph()
     with mixed_graph.as_default():
@@ -145,7 +148,7 @@ def build_graph(dim, l2_coef):
         cross_entropy = -tf.reduce_sum(tf.multiply(one_hot, tf.log(y))) + l2_coef * tf.nn.l2_loss(weight)
 
         # トレーニングの設定
-        optimizer = tf.train.AdamOptimizer() # AdamOptimizerをoptimizerとして設定
+        optimizer = tf.train.AdamOptimizer(learning_rate) # AdamOptimizerをoptimizerとして設定
         train_op = optimizer.minimize(cross_entropy) # train operationを定義
 
         # 評価グラフ
@@ -190,13 +193,14 @@ if __name__ == "__main__":
     # tf.flagsの設定。実行時に引数渡すだけで変数の値を買えられるようになる.
     tf.flags.DEFINE_integer("dim", 50, "dimension of embeddings. (default: 50)")
     tf.flags.DEFINE_integer("batch-size", 16, "batch size. (default: 16)")
-    tf.flags.DEFINE_float("train-dropout", 0.5, "keep probability of dropout for a training. (default: 0.5)")
+    tf.flags.DEFINE_float("dropout-rate", 0.5, "keep probability of dropout for a training. (default: 0.5)")
+    tf.flags.DEFINE_float("learning-rate", 0.1, "learning rate")
     tf.flags.DEFINE_integer("num-epochs", 50, "number of epochs to train. (default: 50)")
     tf.flags.DEFINE_boolean("shuffle", True, "whether or not to shuffle train data. (default: True)")
     tf.flags.DEFINE_float("l2-coef", 1e-08, "coefficient for l2 regurarization.(default: 1e-08)")
     tf.flags.DEFINE_string("logdir", "/tmp/minibatch_train", "log directory for TensorBoard. (default:/tmp/minibatch_train)")
     tf.flags.DEFINE_boolean("eval-log", False, "whether or not to save evaluation data to eval-log-file. (default: Flase)")
-    tf.flags.DEFINE_string("eval-log-file", "evaluation-result.log", "path of evaluation log file (default: evaluation-result.log)")
+    tf.flags.DEFINE_string("eval-logfile", "evaluation-result.log", "path of evaluation log file (default: evaluation-result.log)")
     FLAGS = tf.flags.FLAGS
 
     # ファイルをオープン
@@ -209,14 +213,15 @@ if __name__ == "__main__":
     train_data, vocab_size = util.read_data(train_text,-1)
     test_data, _ = util.read_data(test_text, vocab_size)
 
-    graph = build_graph(FLAGS.dim, FLAGS.l2_coef)
+    graph = build_graph(FLAGS.dim, FLAGS.l2_coef, FLAGS.learning_rate)
 
     with tf.Session(graph=graph.graph) as sess:
         #example: Fri_Jun__2_16:07:20_2017
-        board_name = time.ctime(time.time()).replace(" ", "_")
-        tb_logdir = FLAGS.logdir + "/"  + board_name
+        # board_name = time.ctime(time.time()).replace(" ", "_")
+        # tb_logdir = FLAGS.logdir + "/"  + board_name
+        tb_logdir = FLAGS.logdir + "/" + "bs{}_dim{}_lr{}_l2{}_dr{}".format(FLAGS.batch_size, FLAGS.dim, FLAGS.learning_rate, FLAGS.l2_coef, FLAGS.dropout_rate)
         print("training log will be summarized in:{}".format(tb_logdir))
-
+   
         # for tensorboard
         train_writer = tf.summary.FileWriter(tb_logdir, graph=sess.graph)
 
@@ -240,7 +245,7 @@ if __name__ == "__main__":
             for i, (batch_labels, batch_fvs) in enumerate(train_batches):
                 feed = {graph.input_labels:batch_labels,
                         graph.input_fvs:batch_fvs,
-                        graph.keep_prob:FLAGS.train_dropout}
+                        graph.keep_prob:(1-FLAGS.dropout_rate)}
                 _, loss, summary = sess.run([
                     graph.train_op,
                     graph.cross_entropy,
@@ -282,4 +287,4 @@ if __name__ == "__main__":
 
         if FLAGS.eval_log:
             with open(FLAGS.eval_logfile, "a") as f:
-                f.write("num-epochs:{}\tl2_coef:{}\ttrain_dropout:{}\tbatch-size:{}\tdim:{}\tacc:{:.4}\tf:{:.4}\n".format(FLAGS.dim, FLAGS.l2_coef, FLAGS.train_dropout, FLAGS.batch_size, FLAGS.dim, acc, f_measure))
+                f.write("num-epochs:{0}\tl2:{1}\tdropout:{2}\tlrn_rate:{3}\tbatch-size:{4}\tdim:{5}\tacc:{6:.4}\tf:{7:.4}\n".format(FLAGS.num_epochs, FLAGS.l2_coef, FLAGS.dropout_rate, FLAGS.learning_rate, FLAGS.batch_size, FLAGS.dim, acc, f_measure))
